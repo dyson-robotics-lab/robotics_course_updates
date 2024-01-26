@@ -1,0 +1,578 @@
+<html>
+<head>
+<script src="/socket.io/socket.io.js"></script>
+<script src="/jquery"></script>
+<link rel="stylesheet" href="/bootstrap-css" />
+<script src="/bootstrap-js"></script>
+<script src="/codemirror-js"></script>
+<link rel="stylesheet" href="/codemirror-css" />
+<link rel="stylesheet" href="/monokai" />
+
+<style>
+  body {width:100%; height:100%;}
+
+  #code-editor-container {position:absolute; top:0px; left:0px; width:100%; height:100%; z-index:1000; display:none; background: #272822; color:#f8f8f2;}
+  #code-editor-header {position:absolute; top:0px; left:0px; width:100%; height:5%;}
+  #code-editor-header a {color:#428bca;}
+  #code-editor-div {position:absolute; top:5%; left:0px; width:100%; height:95%;}
+
+  #terminal-output-container {position: absolute; top:0px; left:20%; width:80%; height:20%; border: 1px solid gray; padding:10px;}
+  #terminal-output {width:100%; height: 95%; overflow:auto;}
+  #clearTerminal {float:right; width:50px;}
+
+  #canvas-container {position: absolute; top:20%; left:20%; width:80%; height:65%; border: 1px solid gray; padding:10px; overflow:auto;}
+  #canvases {position:relative; height:95%;}
+  #lines-output {height:100%; position:absolute; top:0px; left:0px; z-index:1;}
+  #robot-output {height:100%; position:absolute; top:0px; left:0px; z-index:3;}
+  #particles-output {height:100%; position:absolute; top:0px; left:0px; z-index:2;}
+
+    .resizerRight {
+      position: absolute;
+      top: 0px;
+      right: 0px;
+      width: 3px;
+      height: 100%;
+      background-color: #444;
+      cursor: ew-resize;
+      z-index: 100;
+    }
+
+  #file-list-container {position: absolute; top:0px; left:0px; width:20%; height:85%; border: 1px solid gray; padding:10px;}
+  #file-list {width:100%; height: 95%; overflow:auto;}
+
+  #footer {position:absolute; top:85%; left:0; padding:20px; width:100%; height:15%;}
+  #uploader {width:20%; float:left;}
+  #timer {width:60%; float:left;}
+  #password-changer {width:20%; float:left; text-align:right;}
+  #change-password-form {display:none;}
+
+  .terminal-error {color: red;}
+  .resizerRight {position: absolute; top:0px; right:0px; width: 3px; height: 100%; background-color: #444; cursor: ew-resize; z-index:100;}
+  .resizerTop {position: absolute; top:0px; left: 0px; width: 100%; height: 3px; background-color: #444; cursor: ns-resize; z-index:100;}
+  .editor-menu-item {padding-left:20px;}
+  .file-options {}
+</style>
+
+<script>
+  /* 
+   * Variables and constants definitions.
+  */
+  var host = window.location.hostname; 
+ 
+  // TODO: Make sure whether the :9000 is needed or not...
+  var socket = io.connect('http://' + host + ':9000');
+
+  var runningFile = null;
+  var files = [];
+  var edittingFile = null;
+  var saving = false;
+
+  var particlesCanvas = null;
+  var particlesContext = null;
+  var linesCanvas = null;
+  var linesContext = null;
+  var myCodeMirror = null;
+  var codeSaved = true;
+  var timerStartedAt = null;
+  var timerInterval = null;
+
+  window.onload = function() {
+    particlesCanvas = $('#particles-output')[0];
+    particlesContext = particlesCanvas.getContext('2d');
+    linesCanvas = $('#lines-output')[0];
+    linesContext = linesCanvas.getContext('2d');
+    robotCanvas = $('#robot-output')[0];
+    robotContext = robotCanvas.getContext('2d');
+    imgCanvas = $('#img-output')[0];
+    imgContext = imgCanvas.getContext('2d');
+
+    resizeRight($('#file-list-container'), [$('#terminal-output-container'), $('#canvas-container')]);
+    resizeTop($('#canvas-container'), [$('#terminal-output-container')]);
+    resizeTop($('#footer'), [$('#file-list-container'), $('#canvas-container')]);
+
+    myCodeMirror = CodeMirror.fromTextArea($('#code-editor')[0], {mode: 'python', theme: 'monokai', lineNumbers: true, lineWrapping: true, indentWithTabs: false, indentUnit: 4, extraKeys: { Tab: betterTab }});
+    myCodeMirror.on("change", function (change) {
+      codeSaved = false;
+    });
+
+  };
+
+  $(window).bind('keydown', function(event) {
+    if (event.ctrlKey || event.metaKey) {
+        switch (String.fromCharCode(event.which).toLowerCase()) {
+        case 's':
+          if ($('#code-editor-container').css('display') == 'block') {
+            event.preventDefault();
+            save(edittingFile);
+          }
+          break;
+      }
+    }
+
+    if (event.which == 27) {
+      if ($('#code-editor-container').css('display') == 'block') {
+        // todo filename
+        cancel(edittingFile);
+      } 
+    }
+  });
+
+  
+  /* 
+   * End variables and constants definitions.
+  */
+  
+  /* 
+   * Socket listeners.
+  */
+  socket.on('init', function (data) {
+    console.log(data);
+    setRunningProcess(data.runningProcess);
+    data.lines.forEach(function(line) {
+      drawLine(line);
+    });
+  });
+
+  socket.on('files', function (data) {
+    console.log(data);
+    showFiles(data.files);
+  });
+
+  socket.on('terminal', function (data) {
+    console.log(data);
+    if (runningFile == null && data.name != null) {
+      setRunningProcess(data.name);
+    }
+    printToTerminal(data.name, data.output);
+  });
+
+  socket.on('graphic', function (data) {
+    console.log(data);
+    // printToTerminal(null, data.command, data.data);
+    if (runningFile == null && data.name != null) {
+      setRunningProcess(data.name);
+    }
+    if (data.command === 'drawParticles' || data.command === 'drawPoints')  {
+      drawParticles(data.data);
+    } else if (data.command === 'drawLine') {
+      drawLine(data.data);
+    } else if (data.command === 'drawRobot') {
+      drawRobot(data.data);
+    }
+    if (data.command === "drawImg") {
+      drawImg(data.data);
+    }
+  });
+
+  socket.on('terminal-error', function (data) {
+    console.log(data);
+    printErrorToTerminal(data.output);
+  }); 
+
+  socket.on('terminal-finished', function (data) {
+    console.log(data);
+    printToTerminal(null, data.output);
+    setRunningProcess(null);
+  });  
+  
+  socket.on('show-file', function (data) {
+    console.log(data);
+    showEditor(data.filename, data.contents);
+  }); 
+
+  socket.on('save-failed', function (data) {
+    console.log(data);
+    saving = false;
+    alert("Failed to save file " + data.filename);
+  }); 
+
+  socket.on('save-successful', function (data) {
+    console.log(data);
+    saving = false;
+    alert("File saved " + data.filename);
+    codeSaved = true;
+  }); 
+
+  socket.on('disconnect', function(data) {
+    alert("Server disconnected.");
+    printErrorToTerminal('Server disconnected. Please go to <a href="https://www.doc.ic.ac.uk/~jrj07/robotics/index.cgi">https://www.doc.ic.ac.uk/~jrj07/robotics/index.cgi</a> to find your Pi\'s new IP. In case the Pi does not respond, try rebooting it.');
+  });
+  /* 
+   * End socket listeners.
+  */
+
+  /* 
+   * Functions definitions.
+  */
+  function betterTab(cm) {
+    if (cm.somethingSelected()) {
+      cm.indentSelection("add");
+    } else {
+      cm.replaceSelection(cm.getOption("indentWithTabs")? "\t":
+      Array(cm.getOption("indentUnit") + 1).join(" "), "end", "+input");
+    }
+  }
+
+  function setRunningProcess(name) {
+    if (name != null) {
+      runningFile = name;
+      $('#currentlyRunning').html("Running " + name + " <a href=\"#\" onclick=\"terminate()\">terminate</a>");
+      $('.file-options').hide();
+    } else {
+      clearInterval(timerInterval);
+      runningFile = null;
+      $('#currentlyRunning').html('');
+      $('.file-options').show();
+    } 
+  }
+
+  function clearTerminal() {
+    $('#terminal-output').html('');
+  }
+
+  function showFiles(filesRecieved) {
+    files = filesRecieved;
+    console.log(files);
+    html = "<ul>";
+    filesRecieved.forEach(function (entry) {
+      if (entry != '.backups') {
+        html += "<li><strong>" + entry + "</strong> <a href=\"#\" class=\"file-options\" onclick=\"execute('" + entry + "')\">Run</a> <a href=\"#\" class=\"file-options\" onclick=\"edit('" + entry + "')\">Edit</a> <a href=\"#\" class=\"file-options\" onclick=\"deleteFile('" + entry + "')\">Delete</a></li>";
+      }
+    });
+    html += "</ul>"
+    $('#file-list').html(html); 
+    if (runningFile != null) {
+      $('.file-options').hide();
+    }
+  }
+
+  function padTo2(number) {
+    if (number < 10) return "0" + number;
+    return number;
+  }
+
+  function decimalPadTo3(number) {
+    while (("" + number).length < 3) {
+      number += "0";
+    }
+    return number;
+  }
+
+  function execute(filenameString) {
+    if (runningFile != null) {
+      alert("There is a script already running! Kill it or wait until it finishes.");
+      return;
+    }
+
+    particlesContext.clearRect(0, 0, particlesCanvas.width, particlesCanvas.height);
+    linesContext.clearRect(0, 0, linesCanvas.width, linesCanvas.height);
+    socket.emit('execute', {filename: filenameString});
+    setRunningProcess(filenameString);
+    printToTerminal(filenameString, "Executing script...");
+
+    timerStartedAt = (new Date()).getTime();
+    timerInterval = setInterval(function() {
+      var currentTime = (new Date()).getTime() - timerStartedAt;
+      var minutes = Math.floor(currentTime / 60000);
+      currentTime = currentTime % 60000;
+      var seconds = Math.floor(currentTime / 1000);
+      currentTime = currentTime % 1000;
+      var milliseconds = currentTime;
+      var timerString = "Time: "; 
+      if (minutes == 0) timerString += seconds + "." + decimalPadTo3(milliseconds) + " seconds";
+      else if (minutes == 1) timerString += minutes + " minute " + seconds + "." + decimalPadTo3(milliseconds) + " seconds";
+      else timerString += minutes + " minutes " + seconds + "." + decimalPadTo3(milliseconds) + " seconds";
+      $('#timer').html(timerString);
+    }, 1);
+  }
+
+  function edit(filenameString) {
+    myCodeMirror.setValue("Loading...");
+    $('#code-editor-container').css({display: 'block'});
+    myCodeMirror.refresh();
+    socket.emit('load-file', {filename: filenameString});
+  }
+
+  function showEditor(filenameString, content) {
+    $('#code-editor-container').css({display: 'block'});
+    $('#code-editor-header').html('<strong>Editting ' + filenameString + ': </strong><a href="#" class="editor-menu-item" onclick="save(\'' + filenameString + '\')">Save</a> <a href="#" class="editor-menu-item" onclick="cancel(\'' + filenameString + '\')">Close</a>');
+    myCodeMirror.setValue(content);
+    myCodeMirror.refresh();
+    codeSaved = true;
+    myCodeMirror.focus();
+    edittingFile = filenameString;
+    if (myCodeMirror.getValue().indexOf('\t') != -1) {
+      if (confirm("Your file uses tabs for indentation. In order to make it compatible with this editor, the tabs will be converted into spaces. Is that OK?")) {
+        myCodeMirror.setValue(content.replace(/\t/g, '    '));
+        myCodeMirror.refresh();
+        codeSaved = false;
+      } else {
+        cancel(filenameString);
+      }
+    }
+  }
+
+  function cancel(filename) {
+    if (saving) {
+      alert("Saving file. Please wait.");
+    } else {
+      if (codeSaved || confirm('Exit without saving changes to ' + filename + '?')) {
+        // Cancel.
+        $('#code-editor-container').css({display: 'none'});
+        edittingFile = null;
+      } else {
+        // Do nothing.
+      }
+    }
+  }
+
+  function save(filename) {
+    if (saving) {
+      alert("Saving file. Please wait.");
+    } else {
+      socket.emit('save', {filename: filename, content: myCodeMirror.getValue()});
+    }
+  }
+
+  function deleteFile(filename) {
+    if (confirm('Are you sure you want to delete ' + filename + '?')) {
+      socket.emit('delete', {filename: filename});
+    } else {
+      // Do nothing.
+    }
+  }
+
+  function newFile() {
+    var filename = prompt("Please enter filename","newFile.py");
+    while (files.indexOf(filename) != -1) {
+      filename = prompt("File with this name already exists in the directory. Please enter a different filename.","newFile.py");
+    }
+    if (filename != null) {
+      showEditor(filename, "");
+    }
+  }
+
+  function terminate() {
+    socket.emit('terminate', {});
+    // setRunningProcess(null);
+  }
+
+  function printToTerminal(name, data) {
+    if (name != null) {
+      $('#terminal-output').append("<strong>" + name + ":</strong> " + data + "<br />");
+    } else {
+      $('#terminal-output').append(data + "<br />");
+    }
+    $('#terminal-output').animate({
+        scrollTop: $("#terminal-output").prop('scrollHeight')
+    }, 1);
+  }
+
+  function printErrorToTerminal(data) {
+    if (runningFile != null) {
+      $('#terminal-output').append("<span class=\"terminal-error\"><strong>" + runningFile + ":</strong> " + data + "</span><br />");
+    } else {
+      $('#terminal-output').append("<span class=\"terminal-error\">" + data + "</span><br />");
+    }
+    $('#terminal-output').animate({
+        scrollTop: $("#terminal-output").prop('scrollHeight')
+    }, 1);
+  }
+
+  function drawParticles(data) {
+    var radius = 3;
+    particlesContext.clearRect(0, 0, particlesCanvas.width, particlesCanvas.height);
+    data.forEach(function(entry) {
+      particlesContext.fillStyle = "rgba(0, 0, 255, " + entry.weight + ")";
+      particlesContext.beginPath();
+      particlesContext.arc(entry.x, entry.y, radius, 0, 2*Math.PI);
+      particlesContext.fill();
+      if (entry.theta != null) {
+        particlesContext.strokeStyle = "rgba(255, 0, 0, " + entry.weight + ")";
+        particlesContext.beginPath();
+        theta = 0.0174532925 * entry.theta;
+        particlesContext.moveTo(entry.x, entry.y);
+        particlesContext.lineTo(parseInt(entry.x) + radius * Math.cos(theta), parseInt(entry.y) + radius * Math.sin(theta));
+        particlesContext.stroke();      
+      }
+    });
+  }
+
+  function drawLine(data) {
+    particlesContext.strokeStyle = "#000000";
+    linesContext.beginPath();
+    linesContext.moveTo(data.x0, data.y0);
+    linesContext.lineTo(data.x1, data.y1);
+    linesContext.stroke();
+  }
+
+  function drawRobot(data) {
+    var radius = 12;
+    robotContext.clearRect(0, 0, robotCanvas.width, robotCanvas.height);
+    robotContext.fillStyle = "rgba(0, 0, 0, 1)";
+    robotContext.beginPath();
+    robotContext.arc(data.x, data.y, radius, 0, 2*Math.PI);
+    robotContext.fill();
+    robotContext.strokeStyle = "rgba(255, 0, 0, 1)";
+    robotContext.beginPath();
+    theta = 0.0174532925 * data.theta;
+    robotContext.moveTo(data.x, data.y);
+    robotContext.lineTo(parseInt(data.x) + radius * Math.cos(theta), parseInt(data.y) + radius * Math.sin(theta));
+    robotContext.stroke();      
+  }
+  function drawImg(data) {
+    const blob = new Blob([data], { type: 'image/jpeg' }); // Change MIME type based on your image format
+    // Create an object URL from the Blob
+    const url = URL.createObjectURL(blob);
+    // Create an image element and set its source to the object URL
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url); // Clean up after loading
+      // You can also get the image width and height here
+      console.log('Width:', image.width);
+      console.log('Height:', image.height);
+      imgContext.clearRect(0, 0, imgCanvas.width, imgCanvas.height)
+      imgContext.drawImage(image, 0, 0);
+    };
+    image.src = url;
+    // Append the image to the document, or manipulate it as needed
+  }
+
+  function resizeRight(element, neighbours) {
+    var resizerDiv = jQuery('<div/>', {class: 'resizerRight'}).appendTo(element);
+    element.on('mousedown', function(e){
+        var $dragable = $(element);
+        var startWidth = parseInt($dragable.css('width'));
+        var pX = e.pageX;
+        neighbourStartData = [];
+        neighbours.forEach(function (neighbour) {
+          neighbourStartData.push({left: parseInt(neighbour.css('left')), width: parseInt(neighbour.css('width'))});
+        });
+        
+        $(document).on('mouseup', function(e){
+            $(document).off('mouseup').off('mousemove');
+        });
+        $(document).on('mousemove', function(me){
+            var mx = (me.pageX - pX);
+            $dragable.css({
+              width: startWidth + mx,
+            });
+
+            for (i = 0; i < neighbours.length; i++) {
+              neighbours[i].css({left: (neighbourStartData[i].left + mx), width: (neighbourStartData[i].width - mx)});
+            }
+        });
+                
+    });
+  }
+
+  function resizeTop(element, neighbours) {
+    jQuery('<div/>', {class: 'resizerTop'}).appendTo(element);
+    element.on('mousedown', function(e){
+        var $dragable = $(element);
+        var startTop = parseInt($dragable.css('top'));
+        var startHeight = parseInt($dragable.height()) + parseInt($dragable.css('padding-top')) + parseInt($dragable.css('padding-bottom')) + parseInt($dragable.css('border-top-width')) + parseInt($dragable.css('border-bottom-width')) + 1;
+        var pY = e.pageY;
+        neighbourStartData = [];
+        neighbours.forEach(function (neighbour) {
+          neighbourStartData.push({height: parseInt(neighbour.css('height'))});
+        });
+        
+        $(document).on('mouseup', function(e){
+            $(document).off('mouseup').off('mousemove');
+        });
+        $(document).on('mousemove', function(me){
+            var my = (me.pageY - pY);
+
+            neighbours.forEach(function (neighbour) {
+              var neighbourTop = parseInt(neighbour.css('top'));
+              if (startTop + my < neighbourTop) {
+                my = neighbourTop - startTop;
+              }
+            });
+
+            $dragable.css({
+              height: startHeight - my,
+              top: startTop + my
+            });
+
+            for (i = 0; i < neighbours.length; i++) {
+              neighbours[i].css({height: (neighbourStartData[i].height + my)});
+            }
+        });
+                
+    });
+  }
+
+  /* Unsupported by the server at the moment.
+  function shutdown() {
+    socket.emit('shutdown');
+  }
+
+  function reboot() {
+    socket.emit('reboot');
+  }*/
+  /* 
+   * End functions definitions.
+  */  
+</script>
+</head>
+<body>
+
+  <!-- List of files. -->
+  <div id="file-list-container">
+    <strong>Files:</strong> <span style="float:right; width:75px;"><a href="#" class="file-options" onclick="newFile();">New file</a></span>
+    <div id="file-list"></div>
+  </div>
+
+  <!-- Text output. -->
+	<div id="terminal-output-container">
+		<strong>Terminal output:</strong>
+      <span id="currentlyRunning"></span>
+      <span id="clearTerminal"><a href="#" onclick="clearTerminal()">clear</a></span>
+      <div id="terminal-output"></div>
+	</div>
+
+  <!-- Graphical output. -->
+  <div id="canvas-container">
+    <strong>Graphic output:</strong>
+    <div id="canvases">
+      <canvas id="particles-output" width="1024" height="768"></canvas>      
+      <canvas id="robot-output" width="1024" height="768"></canvas>      
+      <canvas id="lines-output" width="1024" height="768"></canvas>      
+      <canvas id="img-output" width="1024" height="768"></canvas>
+    </div>
+  </div>
+
+  <!-- Footer with file upload. -->
+  <div id="footer">
+    <div id="uploader">
+      <strong>Upload file:</strong> 
+      <form action="/upload" enctype="multipart/form-data" method="post">
+        <input type="file" name="upload" multiple="multiple" />
+        <input type="submit" value="Upload" />
+        <!-- Not supported in current version <span style="float:right; width:100px;"><a href="#" onclick="shutdown();">Shutdown Pi</a>   <a href="#" onclick="reboot();">Reboot Pi</a></span> -->
+      </form>
+    </div>
+    <div id="timer">&nbsp;</div>
+    <div id="password-changer">
+      <!-- To be implemented <a href="#" class="change-password" onclick="$('#change-password-form').slideToggle('fast');">Change password</a>
+      <form action="/change-password" id="change-password-form" enctype="multipart/form-data" method="post">
+        <label for="oldPassword">Old Password</label>&nbsp;<input type="password" name="oldPassword" id="oldPassword" />
+        <br />
+        <label for="newPassword">New Password</label>&nbsp;<input type="password" name="newPassword" id="newPassword" />
+        <br />
+        <input type="submit" value="Change" /> -->
+        <!-- Not supported in current version <span style="float:right; width:100px;"><a href="#" onclick="shutdown();">Shutdown Pi</a>   <a href="#" onclick="reboot();">Reboot Pi</a></span> -->
+      </form>
+    </div>
+  </div>
+
+  <div id="code-editor-container">
+    <div id="code-editor-header"></div>
+    <div id="code-editor-div">
+      <textarea id="code-editor"></textarea>
+    </div>
+  </div>
+</body>
+</html>

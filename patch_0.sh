@@ -10,3 +10,6 @@ rm /opt/brickpiexplorer/app.js
 
 cp /home/pi/robotics_course_updates/index.html /opt/brickpiexplorer/public/.
 cp /home/pi/robotics_course_updates/app.js /opt/brickpiexplorer/.
+
+
+systemctl restart explorer_server.service
